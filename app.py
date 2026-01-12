@@ -1,5 +1,6 @@
 import os
 import io
+from typing import Optional
 import streamlit as st
 import pdfplumber
 import docx
@@ -76,7 +77,7 @@ if not check_password():
 
 # --------- HELPERS: FILE PARSING & LLM CALL ---------
 
-def extract_text_from_file(uploaded_file) -> str | None:
+def extract_text_from_file(uploaded_file) -> Optional[str]:
     """Extract plain text from PDF, DOCX, or TXT uploads."""
     if uploaded_file is None:
         return None
@@ -153,15 +154,60 @@ def generate_summary(discharge_text: str) -> str:
     return resp.choices[0].message.content
 
 
+# Chat prompt focuses on answering questions about the provided discharge text.
+CHAT_SYSTEM_PROMPT = """
+You are a nurse answering patient and family questions about the discharge summary below.
+
+Rules:
+- Answer only using information present in the discharge summary.
+- If the answer is not in the summary or is unclear, say:
+  "This was not clearly explained in your record."
+- Keep responses clear, short, and friendly.
+- Avoid medical jargon when possible; if you must use it, explain it plainly.
+"""
+
+
+def generate_chat_response(discharge_text: str, messages: list[dict]) -> str:
+    context_message = {
+        "role": "user",
+        "content": f"Discharge summary:\n{discharge_text}",
+    }
+    resp = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+            context_message,
+            *messages,
+        ],
+        temperature=0.2,
+    )
+    return resp.choices[0].message.content
+
+
 # --------- MAIN UI ---------
 
 st.set_page_config(page_title="Patient-Friendly Discharge Summary", layout="wide")
 
-st.title("Patient-Friendly Discharge Summary")
+header_left, header_right = st.columns([0.8, 0.2])
+with header_left:
+    st.title("Patient-Friendly Discharge Summary")
+with header_right:
+    if st.session_state["summary_text"]:
+        if st.button("Start new summary", type="primary"):
+            st.session_state["summary_text"] = ""
+            st.session_state["summary_source"] = ""
+            st.session_state["chat_messages"] = []
 st.caption(
     "Demo app: upload a discharge summary or paste the text, and get a simpler explanation "
     "for patients and families. Do not use with real patient data."
 )
+
+if "summary_text" not in st.session_state:
+    st.session_state["summary_text"] = ""
+if "summary_source" not in st.session_state:
+    st.session_state["summary_source"] = ""
+if "chat_messages" not in st.session_state:
+    st.session_state["chat_messages"] = []
 
 with st.sidebar:
     st.header("Session")
@@ -169,20 +215,25 @@ with st.sidebar:
         st.session_state["authenticated"] = False
         st.experimental_rerun()
 
+    if st.session_state["summary_text"]:
+        if st.button("Start a new summary"):
+            st.session_state["summary_text"] = ""
+            st.session_state["summary_source"] = ""
+            st.session_state["chat_messages"] = []
+
+# Main layout: input first, then summary + chat take the full page
+discharge_text = ""
+
+if not st.session_state["summary_text"]:
+    st.subheader("Discharge Summary Input")
+
     st.markdown("**Input method**")
     input_method = st.radio(
         "",
         options=["Upload file (PDF/DOCX/TXT)", "Paste text"],
         index=0,
+        horizontal=True,
     )
-
-# Main layout: left = input, right = output
-col_input, col_output = st.columns(2)
-
-with col_input:
-    st.subheader("Discharge Summary Input")
-
-    discharge_text = ""
 
     if input_method == "Upload file (PDF/DOCX/TXT)":
         uploaded_file = st.file_uploader(
@@ -208,10 +259,6 @@ with col_input:
         )
 
     generate_clicked = st.button("Generate patient-friendly summary", type="primary")
-
-with col_output:
-    st.subheader("Patient-Friendly Summary")
-
     if generate_clicked:
         if not discharge_text.strip():
             st.error("Please provide some discharge text first.")
@@ -219,8 +266,61 @@ with col_output:
             with st.spinner("Generating summary…"):
                 try:
                     summary = generate_summary(discharge_text.strip())
-                    st.markdown(summary)
+                    st.session_state["summary_text"] = summary
+                    st.session_state["summary_source"] = discharge_text.strip()
+                    st.session_state["chat_messages"] = []
+                    st.success("Summary generated. Ask questions below.")
                 except Exception as e:
                     st.error(f"Error while calling the language model: {e}")
-    else:
-        st.info("Upload or paste a discharge summary, then click the button to generate a summary.")
+
+if st.session_state["summary_text"]:
+    st.subheader("Patient-Friendly Summary")
+    st.markdown(st.session_state["summary_text"])
+
+    st.divider()
+    st.subheader("Chat About This Discharge Summary")
+
+    st.markdown(
+        """
+        <style>
+        .chat-fade-in { animation: fadeInUp 0.5s ease-out; }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        </style>
+        <div class="chat-fade-in">
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if st.button("Clear chat"):
+        st.session_state["chat_messages"] = []
+
+    for message in st.session_state["chat_messages"]:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    user_prompt = st.chat_input("Ask a question about the discharge summary")
+    if user_prompt:
+        st.session_state["chat_messages"].append(
+            {"role": "user", "content": user_prompt}
+        )
+        with st.chat_message("user"):
+            st.markdown(user_prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking…"):
+                try:
+                    reply = generate_chat_response(
+                        st.session_state["summary_source"],
+                        st.session_state["chat_messages"],
+                    )
+                    st.markdown(reply)
+                    st.session_state["chat_messages"].append(
+                        {"role": "assistant", "content": reply}
+                    )
+                except Exception as e:
+                    st.error(f"Error while calling the language model: {e}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
