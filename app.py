@@ -188,6 +188,13 @@ def generate_chat_response(discharge_text: str, messages: list[dict]) -> str:
 
 st.set_page_config(page_title="Patient-Friendly Discharge Summary", layout="wide")
 
+if "summary_text" not in st.session_state:
+    st.session_state["summary_text"] = ""
+if "summary_source" not in st.session_state:
+    st.session_state["summary_source"] = ""
+if "chat_messages" not in st.session_state:
+    st.session_state["chat_messages"] = []
+
 header_left, header_right = st.columns([0.8, 0.2])
 with header_left:
     st.title("Patient-Friendly Discharge Summary")
@@ -202,12 +209,6 @@ st.caption(
     "for patients and families. Do not use with real patient data."
 )
 
-if "summary_text" not in st.session_state:
-    st.session_state["summary_text"] = ""
-if "summary_source" not in st.session_state:
-    st.session_state["summary_source"] = ""
-if "chat_messages" not in st.session_state:
-    st.session_state["chat_messages"] = []
 
 with st.sidebar:
     st.header("Session")
